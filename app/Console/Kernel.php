@@ -15,7 +15,9 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule)
     {
-        // $schedule->command('inspire')->hourly();
+        $schedule->command('lightspeed:get-orders')
+        ->timezone('America/New_York') // EDT соответствует временной зоне New York
+        ->dailyAt('03:00');
     }
 
     /**
