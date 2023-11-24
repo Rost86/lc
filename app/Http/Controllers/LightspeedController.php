@@ -127,7 +127,6 @@ class LightspeedController extends Controller
 	{
 		// Initialize the Guzzle client
 		$client = new Client();
-
 		try {
 			// Send the data to CustomerLabs using a POST request
 			$response = $client->request('POST', $customerLabsEndpoint, [
@@ -151,6 +150,168 @@ class LightspeedController extends Controller
 			throw $e;
 		}
 	}
+	public function getRetailOrders()
+    {
+        $accessToken = $this->getAccessToken();
+        $client = new Client();
+        $timezoneOffset = '-0400'; // Replace with your shop's timezone offset
+        $todayStart = Carbon::today()->subdays(1)->format('Y-m-d\T00:00:00') . $timezoneOffset;
+        try {
+                $response = $client->get('https://api.lightspeedapp.com/API/Account/255201/Sale.json?timeStamp=>,' . $todayStart . '&load_relations=all&completed=true', [
+                    'headers' => [
+                        'Authorization' => 'Bearer ' . $accessToken,
+                    ],
+                ]);
+
+                $data = json_decode((string) $response->getBody(), true);
+				if (!isset($data['Sale'])) {
+					// Handle the case where 'Sale' key does not exist
+					throw new \Exception("The 'Sale' key does not exist in the response data.");
+				}
+				$saleArray = $data['Sale'];
+				$filteredSales = array_filter($saleArray, function ($sale) {
+					return isset($sale['displayableSubtotal']) && floatval($sale['displayableSubtotal']) >= 0;
+				});
+                $formattedData = [];
+
+				foreach ($filteredSales as $sale) {
+					$productArray = [];
+					// Check if SaleLines is set and is an array
+					if (isset($sale['SaleLines']['SaleLine'])) {
+						// Check if SaleLine is an array of arrays (multiple sale lines)
+						if (isset($sale['SaleLines']['SaleLine'][0]) && is_array($sale['SaleLines']['SaleLine'][0])) {
+							foreach ($sale['SaleLines']['SaleLine'] as  $line) {
+								$productArray[] = $this->formatProductData($line);
+							}
+						} else {
+							// SaleLine is a single array (one sale line)
+							$productArray[] = $this->formatProductData($sale['SaleLines']['SaleLine']);
+						}
+					}
+					$formattedData[] = [
+						'event_name' => 'Purchased',
+						'user_id' => $sale['customerID'] ?? '',
+						'ip' => '', 
+						'language' => 'Français (CA)', 
+						'source' => '', 
+						'user_agent' => '', 
+						'phone' => $sale['Customer']['Contact']['Phones']['ContactPhone']['number'] ?? '',
+						'email' => $sale['Customer']['Contact']['Emails']['ContactEmail']['address'] ?? '',
+						"paymentStatus" => 'completed', 
+						'timestamp' => $sale['timeStamp'] ?? '',
+						'products' => $productArray,
+						'properties' => [
+							"order_id" => $sale['saleID'] ?? '',
+							"transaction_id" => $sale['SalePayments']['SalePayment']['salePaymentID'] ?? '', // 
+							"tax" => $sale['taxTotal'] ?? '',
+							"revenue" => $sale['total'] - $sale['taxTotal']  ?? '',
+							"currency" => "CAD", 
+							"coupon" => '', 
+							"shipping" => '', 
+							"step" => 2,
+							"page_title" => "Cart",
+							"page_url" => "/cart/"
+						]
+					];
+
+
+			
+				}
+				$this->sendRdata($formattedData);	
+
+		return $formattedData;
+
+        } catch (\Exception $e) {
+            // Handle exception
+            return response()->json(['error' => $e->getMessage()], 500);
+        }
+    }
+	
+	public function sendRdata($cdate)
+    {
+		$rsEndpoint = 'https://hook.customerlabs.co/source/r-series-4012/';
+		$apiKey = 'M5iPmN0Do994KJy4jBcWj9F1NFRvg8Km9dUzlZM6';
+		foreach ($cdate as $date) {		
+			$this->sendToCustomerLabs($date, $apiKey, $rsEndpoint);
+		}	
+	}
+	
+    public function getAccessToken()
+    { 
+        $client = new Client();
+
+        try {
+            $response = $client->post('https://cloud.lightspeedapp.com/oauth/access_token.php', [
+                'form_params' => [
+					'refresh_token' => '8fe00c169e4f464fb6906dd29e45fa34b91691f0',
+                    'client_id' => '19de0d361648255df7b3a5fd752d97fc19b2de1fc9bf617bc23ecaac4981b784',
+                    'client_secret' => '3b0077f929a1d6d71e39a30d518a9297c08608e752cb61ad6591576fe6ceb3a2',
+					'code' => 'adc889540f5b90db76e5ca2ebb8f5ed17dc70ed6',
+					'grant_type' => 'refresh_token'
+                ],
+            ]);
+
+            $data = json_decode((string) $response->getBody(), true);
+			
+			return $data['access_token'];
+           
+        } catch (\Exception $e) {
+            // Handle exception
+            return response()->json(['error' => $e->getMessage()], 500);
+        }
+    }
+	
+	private function formatProductData($line)
+	{
+		$productID = $line['itemID'] ?? '';
+		$imageUrl = $this->getProductImageUrl($productID); // Function to get image URL
+
+		return [
+			"product_id" => $productID,
+			"product_name" => $line['Item']['description'] ?? '',
+			"product_brand" => $line['Item']['brand'] ?? '',
+			"product_price" => $line['Item']['Prices']['ItemPrice'][0]['amount'] ?? '',
+			"product_quantity" => $line['unitQuantity'] ?? '',
+			"product_url" => '',
+			"product_img_url" => $imageUrl
+		];
+	}
+	private function getProductImageUrl($itemID)
+	{
+		$accessToken = $this->getAccessToken();
+		// Endpoint URL with the account ID and item ID
+		$url = 'https://api.lightspeedapp.com/API/V3/Account/255201/Item/' .$itemID. '/Image.json';
+
+		// Create a new GuzzleHttp client
+		$client = new Client();
+
+		try {
+			// Send a GET request to the Lightspeed API
+			$response = $client->request('GET', $url, [
+				'headers' => [
+					'Authorization' => 'Bearer ' . $accessToken,
+					'Content-Type' => 'application/json',
+					'Accept' => 'application/json',
+				]
+			]);
+
+			// Decode the JSON response
+			$data = json_decode($response->getBody()->getContents(), true);
+			// Check if image data is available and return the URL
+			if (isset($data['Image']) && count($data['Image']) > 0) {
+				return $data['Image'][0]['url'] ?? '';
+				
+			}
+		} catch (\GuzzleHttp\Exception\GuzzleException $e) {
+			// Handle the exception or log the error
+			// Log::error("Error fetching product image URL: " . $e->getMessage());
+		}
+
+		// Return an empty string if the request fails or no image is found
+		return '';
+	}
+
+
 }
 	
 	

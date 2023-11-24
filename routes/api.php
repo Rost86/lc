@@ -19,3 +19,4 @@ Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
 });
 
 Route::get('/lightspeed/orders', [LightspeedController::class, 'getOrders']);
+Route::get('/lightspeed/token', [LightspeedController::class, 'getRetailOrders']);
